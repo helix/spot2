@@ -39,7 +39,7 @@ $cnf =& $GLOBALS['cfg']['adapter']['mysql'];
 $adapter = $spotConfig->addConnection('test_mysql', sprintf('mysql://%s:%s@%s/%s', $cnf['user'], $cnf['pass'], $cnf['host'], $cnf['db']));
 
 // MongoDB with adapter options
-$cnf =& $GLOBALS['cfg']['adapter']['mysql'];
+$cnf =& $GLOBALS['cfg']['adapter']['mongodb'];
 $adapter = $spotConfig->addConnection('test_mongodb', sprintf('mongodb://%s:%s', $cnf['host'], $cnf['port']), array(
 	'cursor' => array(
 		'timeout' => 10
