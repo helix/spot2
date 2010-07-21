@@ -7,7 +7,7 @@
  */
 class Spot_Mapper
 {
-	protected $_cfg;
+	protected $_config;
 	
 	// Entity manager
 	protected static $_entityManager;
@@ -212,9 +212,6 @@ class Spot_Mapper
 			throw new $this->_exceptionClass("Entity must be an object, type '" . gettype($entity) . "' given");
 		}
 		
-		$entityName = get_class($entity);
-		$entityFieldsDefined = $this->fieldsDefined($entityName);
-		
 		// SET data
 		if(count($data) > 0) {
 			foreach($data as $key => $value) {
@@ -225,6 +222,8 @@ class Spot_Mapper
 		
 		// GET data
 		$data = array();
+        $entityName = get_class($entity);
+		$entityFieldsDefined = $this->fieldsDefined($entityName);
 		foreach($entityFieldsDefined as $field => $fieldInfo) {
 			$value = $entity->$field;
 			
@@ -254,19 +253,27 @@ class Spot_Mapper
 		if(false === $identifier) {
 			// No parameter passed, create a new empty entity object
 			$entity = new $entityClass();
+            $this->data($entity, array($this->primaryKeyField($entityClass) => null));
 		} else if(is_array($identifier)) {
 			// An array was passed, create a new entity with that data
 			$entity = new $entityClass($identifier);
+            $this->data($entity, array($this->primaryKeyField($entityClass) => null));
 		} else {
 			// Scalar, find record by primary key
-			$entity = $this->first($entityClass, array($this->primaryKeyField() => $identifier));
+			$entity = $this->first($entityClass, array($this->primaryKeyField($entityClass) => $identifier));
 			if(!$entity) {
 				return false;
 			}
+            $this->loadRelations($entity);
 		}
 
 		// Set default values and return entity object
-		return $this->data($entity, $this->entityManager()->fieldDefaultValues($entityClass));
+        $entityDefaultValues = $this->entityManager()->fieldDefaultValues($entityClass);
+        if(count($entityDefaultValues) > 0) {
+            $this->data($entity, $entityDefaultValues);
+        }
+        
+		return $entity;
 	}
 
 
@@ -326,8 +333,8 @@ class Spot_Mapper
 	 */
 	public function save($entity, array $options = array())
 	{
-		if(is_array($entity)) {
-			$entity = $this->get()->data($entity);
+		if(!is_object($entity)) {
+			throw new $this->_exceptionClass(__CLASS__ . "::" . __FUNCTION__ . " Requires an entity object as the first parameter");
 		}
 
 		// Run beforeSave to know whether or not we can continue
@@ -377,7 +384,7 @@ class Spot_Mapper
 			$entity = $this->get($entityName);
 			$data = $options;
 		} else {
-			throw new $this->_exceptionClass(__CLASS__ . "::insert Accepts either an entity object or entity name + data array");
+			throw new $this->_exceptionClass(__CLASS__ . "::" . __FUNCTION__ . " Accepts either an entity object or entity name + data array");
 		}
 
 		// Ensure there is actually data to update
@@ -387,6 +394,9 @@ class Spot_Mapper
 			// Update primary key on row
 			$pkField = $this->primaryKeyField($entityName);
 			$entity->$pkField = $result;
+			
+			// Load relations on new entity
+			$this->loadRelations($entity);
 		} else {
 			$result = false;
 		}
@@ -396,32 +406,25 @@ class Spot_Mapper
 
 
 	/**
-	 * Update given row object
+	 * Update given entity object
      *
-     * @param mixed $entity Entity object or array of field => value pairs
+     * @param object $entity Entity object
      * @params array $options Array of adapter-specific options
 	 */
 	public function update($entity, array $options = array())
 	{
-		// Ensure fields exist to prevent errors
-		$binds = array();
-		foreach($entity->dataModified() as $field => $value) {
-			if($this->fieldExists($field)) {
-				// Empty values will be NULL (easier to be handled by databases)
-				$binds[$field] = $this->isEmpty($value) ? null : $value;
-			}
+        if(is_object($entity)) {
+			$entityName = get_class($entity);
+			$data = $this->data($entity);
+		} else {
+			throw new $this->_exceptionClass(__CLASS__ . "::" . __FUNCTION__ . " Requires an entity object as the first parameter");
 		}
 
 		// Handle with adapter
-		if(count($binds) > 0) {
-			$result = $this->adapter()->update($this->datasource(), $binds, array($this->primaryKeyField() => $this->primaryKey($entity)));
+		if(count($data) > 0) {
+			$result = $this->connection($entityName)->update($this->datasource($entityName), $data, array($this->primaryKeyField($entityName) => $this->primaryKey($entity)));
 		} else {
 			$result = true;
-		}
-
-		// Save related rows
-		if($result) {
-			$this->saveRelatedRowsFor($entity);
 		}
 
 		return $result;
@@ -431,23 +434,25 @@ class Spot_Mapper
 	/**
 	 * Delete items matching given conditions
 	 *
-	 * @param mixed $conditions Array of conditions in column => value pairs or Entity object
-     * @params array $options Array of adapter-specific options
-     *
-     * @param string $entityName Name of the entity class
+     * @param mixed $entityName Name of the entity class or entity object
+	 * @param array $conditions Optional array of conditions in column => value pairs
+     * @params array $options Optional array of adapter-specific options
 	 */
-	public function delete($entityName, $conditions, array $options = array())
+	public function delete($entityName, array $conditions = array(), array $options = array())
 	{
-		if($entityName instanceof Spot_Entity) {
+		if(is_object($entityName)) {
+            $entity = $entityName;
+            $entityName = get_class($entityName);
 			$conditions = array(
-				0 => array('conditions' => array($this->primaryKeyField($entityName) => $this->primaryKey($entityName)))
+				0 => array('conditions' => array($this->primaryKeyField($entityName) => $this->primaryKey($entity)))
 				);
+            // @todo Clear entity from identity map on delete, when implemented
 		}
 
 		if(is_array($conditions)) {
-			return $this->adapter()->delete($this->datasource($entityName), $conditions);
+			return $this->connection($entityName)->delete($this->datasource($entityName), $conditions, $options);
 		} else {
-			throw new $this->_exceptionClass(__METHOD__ . " conditions must be entity object or array, given " . gettype($conditions) . "");
+			throw new $this->_exceptionClass(__METHOD__ . " conditions must be an array, given " . gettype($conditions) . "");
 		}
 	}
 
@@ -472,19 +477,91 @@ class Spot_Mapper
 	public function dropDatasource($entityName) {
 		return $this->connection($entityName)->dropDatasource($this->datasource($entityName));
 	}
+    
+    
+    /**
+	 * Migrate table structure changes from model to database
+	 *
+	 * @param string $entityName Name of the entity class
+	 */
+	public function migrate($entityName)
+	{
+		return $this->connection($entityName)->migrate($this->datasource($entityName), $this->fields($entityName));
+	}
+    
+    
+    /**
+     * Load defined relations
+     */
+    public function loadRelations($entity)
+    {
+        $entityName = get_class($entity);
+        $relations = array();
+        $rels = $this->entityRelationConditions($entity);
+        if(count($rels) > 0) {
+            foreach($rels as $field => $relation) {
+                $relationEntity = isset($relation['entity']) ? $relation['entity'] : false;
+                if(!$relationEntity) {
+                    throw new $this->_exceptionClass("Entity for '" . $field . "' relation has not been defined.");
+                }
 
+                // Self-referencing entity relationship?
+                if($relationEntity == ':self') {
+                    $relationEntity = $entityName;
+                }
 
-	/**
+                // Load relation class to lazy-loading relations on demand
+                $relationClass = 'Spot_Relation_' . $relation['relation'];
+                if($loadedRel = spot_load_class($relationClass)) {
+                    // Set field equal to relation class instance
+                    $relationObj = new $relationClass($this, $relationEntity, $relation);
+                    $relations[$field] = $relationObj;
+                    $entity->$field = $relationObj;
+                }
+
+            }
+        }
+        return $relations;
+    }
+    
+    
+    /**
+     * Replace entity value placeholders on relation definitions
+     * Currently replaces ':entity.[col]' with the field value from the passed entity object
+     */
+    public function entityRelationConditions($entity)
+    {
+        $entityName = get_class($entity);
+        $rels = $this->relations($entityName);
+        if(count($rels) > 0) {
+            foreach($rels as $field => $relation) {
+                // Load foreign keys with data from current row
+                // Replace ':entity.[col]' with the field value from the passed entity object
+                if(isset($relation['where'])) {
+                    foreach($relation['where'] as $relationCol => $col) {
+                        if(is_string($col) && strpos($col, ':entity.') !== false) {
+                            $col = str_replace(':entity.', '', $col);
+                            $rels[$field]['where'][$relationCol] = $entity->$col;
+                        }
+                    }
+                }
+            }
+        }
+        return $rels;
+    }
+    
+    
+    /**
 	 * Run set validation rules on fields
 	 *
 	 * @todo A LOT more to do here... More validation, break up into classes with rules, etc.
 	 */
 	public function validate($entity)
 	{
-		$this->checkEntity($entity);
-
+        $entityName = get_class($entity);
+        
 		// Check validation rules on each feild
-		foreach($this->fields() as $field => $fieldAttrs) {
+		foreach($this->fields($entityName) as $field => $fieldAttrs) {
 			if(isset($fieldAttrs['required']) && true === $fieldAttrs['required']) {
 				// Required field
 				if(empty($entity->$field)) {
@@ -499,17 +576,6 @@ class Spot_Mapper
 		} else {
 			return true;
 		}
-	}
-
-
-	/**
-	 * Migrate table structure changes from model to database
-	 *
-	 * @param string $entityName Name of the entity class
-	 */
-	public function migrate($entityName)
-	{
-		return $this->connection($entityName)->migrate($this->datasource($entityName), $this->fields($entityName));
 	}
 
 

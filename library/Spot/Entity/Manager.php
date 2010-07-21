@@ -29,6 +29,10 @@ class Spot_Entity_Manager
 	 */
 	public function fields($entityName)
 	{
+        if(!is_string($entityName)) {
+            throw new Spot_Exception(__METHOD__ . " only accepts a string. Given (" . gettype($entityName) . ")");
+        }
+        
 		if(isset(self::$_fields[$entityName])) {
 			$returnFields = self::$_fields[$entityName];
 		} else {
@@ -110,6 +114,7 @@ class Spot_Entity_Manager
 				);
 
 			$returnFields = array();
+            self::$_fieldDefaultValues[$entityName] = array();
 			foreach($entityProperties['public'] as $fieldName => $fieldOpts) {
 				// Store field definition exactly how it is defined before modifying it below
 				if($fieldOpts['type'] != 'relation') {
@@ -132,7 +137,7 @@ class Spot_Entity_Manager
 				// Store default value
 				if(null !== $fieldOpts['default']) {
 					self::$_fieldDefaultValues[$entityName][$fieldName] = $fieldOpts['default'];
-				}
+                }
 				// Store relations (and remove them from the mix of regular fields)
 				if($fieldOpts['type'] == 'relation') {
 					self::$_relations[$entityName][$fieldName] = $fieldOpts;
@@ -184,8 +189,9 @@ class Spot_Entity_Manager
 	 */
 	public function relations($entityName)
 	{
+		$this->fields($entityName);
 		if(!isset(self::$_relations[$entityName])) {
-			$this->fields($entityName);
+			return array();
 		}
 		return self::$_relations[$entityName];
 	}
